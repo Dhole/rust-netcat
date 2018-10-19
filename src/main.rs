@@ -5,9 +5,10 @@ extern crate mio;
 
 use getopts::Options;
 
-use mio::unix::EventedFd;
+use mio::unix::{EventedFd, UnixReady};
 
 use mio::{Token, PollOpt, Ready, Poll, Events};
+//use mio::net::TcpStream;
 
 use std::env;
 use std::process;
@@ -97,26 +98,32 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
     poll.register(
         &EventedFd(&_stdin.as_raw_fd()),
         TOKEN_STDIN,
-        Ready::readable(),
+        Ready::readable() | UnixReady::hup(),
         PollOpt::edge(),
     )?;
     poll.register(
         &EventedFd(&stream.as_raw_fd()),
         TOKEN_STREAM,
-        Ready::readable(),
+        Ready::readable() | UnixReady::hup(),
         PollOpt::edge(),
     )?;
     let mut events = Events::with_capacity(1024);
     loop {
         poll.poll(&mut events, None)?;
         for event in &events {
+            eprintln!("{:?}", event);
+            if UnixReady::from(event.readiness()).is_hup() {
+                return Ok(());
+            }
             match event.token() {
                 TOKEN_STDIN => {
+                    // TODO: Need to read entire stding buffer in a loop
                     let len = stdin.read(&mut buf_in)?;
                     stream.write(&buf_in[..len])?;
                     stream.flush()?;
                 }
                 TOKEN_STREAM => {
+                    // TODO: Need to read entire stream buffer in a loop
                     let len = stream.read(&mut buf_in)?;
                     stdout.write(&buf_in[..len])?;
                     stdout.flush()?;
