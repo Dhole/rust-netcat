@@ -8,12 +8,16 @@ use getopts::Options;
 use mio::unix::{EventedFd, UnixReady};
 
 use mio::{Token, PollOpt, Ready, Poll, Events};
-//use mio::net::TcpStream;
+use mio::net::TcpStream;
 
+//use std::net::SocketAddr;
+
+use std::io::BufRead;
 use std::env;
 use std::process;
-use std::net::TcpStream;
+use std::net::TcpStream as NetTcpStream;
 use std::io::{self, Read, Write};
+//use std::io::ErrorKind;
 use std::os::unix::io::AsRawFd;
 
 fn print_usage(program: &str, opts: Options, code: i32) {
@@ -73,7 +77,8 @@ fn main() {
 }
 
 fn setup_stream(host: &str, port: &str) -> io::Result<TcpStream> {
-    TcpStream::connect(format!("{}:{}", host, port))
+    let stream = NetTcpStream::connect(&format!("{}:{}", host, port))?;
+    TcpStream::from_stream(stream)
 }
 
 fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
@@ -90,7 +95,7 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
     let mut stdout = _stdout.lock();
     let _stdin = io::stdin();
     let mut stdin = _stdin.lock();
-    let mut buf_in = [0; 1024];
+    let mut buf_in = [0; 8192];
 
     const TOKEN_STDIN: Token = Token(0);
     const TOKEN_STREAM: Token = Token(1);
@@ -99,33 +104,39 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
         &EventedFd(&_stdin.as_raw_fd()),
         TOKEN_STDIN,
         Ready::readable() | UnixReady::hup(),
-        PollOpt::edge(),
+        PollOpt::level(),
     )?;
     poll.register(
         &EventedFd(&stream.as_raw_fd()),
         TOKEN_STREAM,
         Ready::readable() | UnixReady::hup(),
-        PollOpt::edge(),
+        PollOpt::level(),
     )?;
     let mut events = Events::with_capacity(1024);
     loop {
         poll.poll(&mut events, None)?;
         for event in &events {
-            eprintln!("{:?}", event);
+            //eprintln!("{:?}", event);
             if UnixReady::from(event.readiness()).is_hup() {
                 return Ok(());
             }
             match event.token() {
                 TOKEN_STDIN => {
-                    // TODO: Need to read entire stding buffer in a loop
-                    let len = stdin.read(&mut buf_in)?;
-                    stream.write(&buf_in[..len])?;
+                    // Stdin is buffered.  Since we can't access StdinRaw we must consume
+                    // all the buffered data.  Otherwise data will be left in the Stdin
+                    // buffer and poll will block, leaving data unsent untill there is
+                    // more readable data in the StdinRaw.
+                    let len = {
+                        let stdin_buf = stdin.fill_buf()?;
+                        stream.write_all(stdin_buf)?;
+                        stdin_buf.len()
+                    };
+                    stdin.consume(len);
                     stream.flush()?;
                 }
                 TOKEN_STREAM => {
-                    // TODO: Need to read entire stream buffer in a loop
                     let len = stream.read(&mut buf_in)?;
-                    stdout.write(&buf_in[..len])?;
+                    stdout.write_all(&buf_in[..len])?;
                     stdout.flush()?;
                 }
                 _ => unreachable!(),
