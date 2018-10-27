@@ -3,6 +3,8 @@
 extern crate getopts;
 extern crate mio;
 
+mod stdio;
+
 use getopts::Options;
 
 use mio::unix::{EventedFd, UnixReady};
@@ -12,7 +14,7 @@ use mio::net::TcpStream;
 
 //use std::net::SocketAddr;
 
-use std::io::BufRead;
+//use std::io::BufRead;
 use std::env;
 use std::process;
 use std::net::TcpStream as NetTcpStream;
@@ -93,15 +95,16 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
     let mut stream = setup_stream(host, port)?;
     let _stdout = io::stdout();
     let mut stdout = _stdout.lock();
-    let _stdin = io::stdin();
-    let mut stdin = _stdin.lock();
+    //let _stdin = io::stdin();
+    //let mut stdin = _stdin.lock();
+    let mut stdin = stdio::Stdin::new()?;
     let mut buf_in = [0; 8192];
 
     const TOKEN_STDIN: Token = Token(0);
     const TOKEN_STREAM: Token = Token(1);
     let poll = Poll::new()?;
     poll.register(
-        &EventedFd(&_stdin.as_raw_fd()),
+        &EventedFd(&stdin.as_raw_fd()),
         TOKEN_STDIN,
         Ready::readable() | UnixReady::hup(),
         PollOpt::level(),
@@ -126,12 +129,14 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
                     // all the buffered data.  Otherwise data will be left in the Stdin
                     // buffer and poll will block, leaving data unsent untill there is
                     // more readable data in the StdinRaw.
-                    let len = {
-                        let stdin_buf = stdin.fill_buf()?;
-                        stream.write_all(stdin_buf)?;
-                        stdin_buf.len()
-                    };
-                    stdin.consume(len);
+                    //let len = {
+                    //    let stdin_buf = stdin.fill_buf()?;
+                    //    stream.write_all(stdin_buf)?;
+                    //    stdin_buf.len()
+                    //};
+                    //stdin.consume(len);
+                    let len = stdin.read(&mut buf_in)?;
+                    stream.write_all(&buf_in[..len])?;
                     stream.flush()?;
                 }
                 TOKEN_STREAM => {
