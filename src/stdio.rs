@@ -16,20 +16,25 @@ use std::os::unix::io::AsRawFd;
 //use std::os::raw::c_int;
 //use libc::c_int;
 
-pub struct Stdin(());
+pub struct Stdin(FileDesc);
 pub struct Stdout(());
 pub struct Stderr(());
 
 impl Stdin {
     pub fn new() -> io::Result<Stdin> {
-        Ok(Stdin(()))
+        Ok(Stdin(FileDesc::new(libc::STDIN_FILENO)))
     }
 
     pub fn read(&self, data: &mut [u8]) -> io::Result<usize> {
-        let fd = FileDesc::new(libc::STDIN_FILENO);
-        let ret = fd.read(data);
-        fd.into_raw();
-        ret
+        //let fd = FileDesc::new(libc::STDIN_FILENO);
+        //let fd = self.0;
+        //fd.into_raw();
+        //ret
+        self.0.read(data)
+    }
+
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.0.set_nonblocking(nonblocking)
     }
 }
 
@@ -204,13 +209,13 @@ impl FileDesc {
     }
 }
 
-//impl Drop for FileDesc {
-//    fn drop(&mut self) {
-//        // Note that errors are ignored when closing a file descriptor. The
-//        // reason for this is that if an error occurs we don't actually know if
-//        // the file descriptor was closed or not, and if we retried (for
-//        // something like EINTR), we might close another valid file descriptor
-//        // opened after we closed ours.
-//        let _ = unsafe { libc::close(self.fd) };
-//    }
-//}
+impl Drop for FileDesc {
+    fn drop(&mut self) {
+        // Note that errors are ignored when closing a file descriptor. The
+        // reason for this is that if an error occurs we don't actually know if
+        // the file descriptor was closed or not, and if we retried (for
+        // something like EINTR), we might close another valid file descriptor
+        // opened after we closed ours.
+        let _ = unsafe { libc::close(self.fd) };
+    }
+}
