@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 extern crate libc;
 
 // Code taken from std::sys
@@ -49,10 +51,6 @@ impl Stdout {
         fd.into_raw();
         ret
     }
-
-    pub fn flush(&self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 impl Stderr {
@@ -65,10 +63,6 @@ impl Stderr {
         let ret = fd.write(data);
         fd.into_raw();
         ret
-    }
-
-    pub fn flush(&self) -> io::Result<()> {
-        Ok(())
     }
 }
 

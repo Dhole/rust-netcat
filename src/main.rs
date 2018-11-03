@@ -1,7 +1,7 @@
 //extern crate clap;
 //use clap::{Arg, App};
-#[macro_use]
-extern crate itertools;
+//#[macro_use]
+//extern crate itertools;
 #[macro_use]
 extern crate enum_primitive_derive;
 extern crate num_traits;
@@ -17,7 +17,7 @@ use mio::unix::{EventedFd, UnixReady};
 use mio::{Token, PollOpt, Ready, Poll, Events};
 use mio::net::TcpStream;
 
-use itertools::Itertools;
+//use itertools::Itertools;
 
 //use std::net::SocketAddr;
 
@@ -108,15 +108,16 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
     let mut stream = setup_stream(host, port)?;
     let stream_fd = stream.as_raw_fd();
     let stream_ev = EventedFd(&stream_fd);
-    let _stdout = io::stdout();
-    let mut stdout = _stdout.lock();
-    let stdout_fd = _stdout.as_raw_fd();
-    let stdout_ev = EventedFd(&stdout_fd);
     //let _stdin = io::stdin();
     //let mut stdin = _stdin.lock();
     let stdin = stdio::Stdin::new()?;
     let stdin_fd = stdin.as_raw_fd();
     let stdin_ev = EventedFd(&stdin_fd);
+    //let _stdout = io::stdout();
+    //let mut stdout = _stdout.lock();
+    let stdout = stdio::Stdout::new()?;
+    let stdout_fd = stdout.as_raw_fd();
+    let stdout_ev = EventedFd(&stdout_fd);
     let mut buf_in = [0; 1024 * 64];
     let mut buf_in_len = 0;
     let mut buf_out = [0; 1024 * 64];
