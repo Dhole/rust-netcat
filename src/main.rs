@@ -4,12 +4,17 @@
 //extern crate itertools;
 #[macro_use]
 extern crate enum_primitive_derive;
+#[macro_use]
+extern crate bitflags;
 extern crate num_traits;
 extern crate getopts;
 extern crate mio;
 
 mod stdio;
+mod libc_utils;
+mod poll;
 
+use poll::{poll, PollFd, PollEvent};
 use getopts::Options;
 
 use mio::unix::{EventedFd, UnixReady};
@@ -93,21 +98,7 @@ fn main() {
 //    TcpStream::from_stream(stream)
 //}
 
-#[derive(Primitive, Clone, Copy)]
-enum IoState {
-    Read = 0,
-    Write = 1,
-}
-
 fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
-    //let stream: Box<Write> = if flag_listen {
-    //    listen(opt_host, opt_port);
-    //    // TODO: Remove
-    //    Box::new(TcpStream::connect(format!("{}:{}", opt_host, opt_port))?)
-    //} else {
-    //    //connect(opt_host, opt_port);
-    //    Box::new(TcpStream::connect(format!("{}:{}", opt_host, opt_port)))
-    //};
     let _stream = if flag_listen {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", port))?;
         let (stream, _socket) = listener.accept()?;
@@ -117,18 +108,9 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
         NetTcpStream::connect(&format!("{}:{}", host, port))?
     };
     let mut stream = TcpStream::from_stream(_stream)?;
-    let stream_fd = stream.as_raw_fd();
-    let stream_ev = EventedFd(&stream_fd);
-    //let _stdin = io::stdin();
-    //let mut stdin = _stdin.lock();
     let stdin = stdio::Stdin::new()?;
-    let stdin_fd = stdin.as_raw_fd();
-    let stdin_ev = EventedFd(&stdin_fd);
-    //let _stdout = io::stdout();
-    //let mut stdout = _stdout.lock();
     let stdout = stdio::Stdout::new()?;
-    let stdout_fd = stdout.as_raw_fd();
-    let stdout_ev = EventedFd(&stdout_fd);
+
     let mut buf_in = [0; 1024 * 64];
     let mut buf_in_len = 0;
     let mut buf_out = [0; 1024 * 64];
@@ -137,105 +119,61 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
     //let mut stream_closed = false;
     let mut stdin_closed = false;
 
-    const TOKEN_STDIN: Token = Token(0);
-    const TOKEN_STDOUT: Token = Token(1);
-    const TOKEN_STREAM: Token = Token(2);
-
-    let poll_in_out = vec![
-        vec![Poll::new()?, Poll::new()?],
-        vec![Poll::new()?, Poll::new()?],
+    let (stdin_idx, stdout_idx, stream_idx) = (0, 1, 2);
+    let mut fds = [
+        PollFd {
+            fd: stdin.as_raw_fd(),
+            events: PollEvent::empty(),
+            revents: PollEvent::empty(),
+        },
+        PollFd {
+            fd: stdout.as_raw_fd(),
+            events: PollEvent::empty(),
+            revents: PollEvent::empty(),
+        },
+        PollFd {
+            fd: stream.as_raw_fd(),
+            events: PollEvent::empty(),
+            revents: PollEvent::empty(),
+        },
     ];
-    for state_in in vec![IoState::Read, IoState::Write] {
-        for state_out in vec![IoState::Read, IoState::Write] {
-            let (in_ev, in_token, in_readyness) = match state_in {
-                IoState::Read => (&stream_ev, TOKEN_STREAM, Ready::readable()),
-                IoState::Write => (&stdout_ev, TOKEN_STDOUT, Ready::writable()),
-            };
-            let (out_ev, out_token, out_readyness) = match state_out {
-                IoState::Read => (&stdin_ev, TOKEN_STDIN, Ready::readable()),
-                IoState::Write => (&stream_ev, TOKEN_STREAM, Ready::writable()),
-            };
-            if in_token == out_token {
-                poll_in_out[state_in as usize][state_out as usize]
-                    .register(
-                        in_ev,
-                        in_token,
-                        in_readyness | out_readyness | UnixReady::hup(),
-                        PollOpt::level(),
-                    )
-                    .unwrap();
-            } else {
-                poll_in_out[state_in as usize][state_out as usize]
-                    .register(
-                        in_ev,
-                        in_token,
-                        in_readyness | UnixReady::hup(),
-                        PollOpt::level(),
-                    )
-                    .unwrap();
-                poll_in_out[state_in as usize][state_out as usize]
-                    .register(
-                        out_ev,
-                        out_token,
-                        out_readyness | UnixReady::hup(),
-                        PollOpt::level(),
-                    )
-                    .unwrap();
-            }
-        }
-    }
-    let mut events = Events::with_capacity(1024);
     loop {
-        let state_in = match buf_in_len {
-            0 => IoState::Read,
-            _ => IoState::Write,
-        };
-        let state_out = match buf_out_len {
-            0 => IoState::Read,
-            _ => IoState::Write,
-        };
-        poll_in_out[state_in as usize][state_out as usize]
-            .poll(&mut events, None)
-            .unwrap();
-        for event in &events {
+        fds[stdin_idx].events = PollEvent::empty();
+        fds[stdout_idx].events = PollEvent::empty();
+        fds[stream_idx].events = PollEvent::empty();
+        if buf_in_len == 0 {
+            fds[stream_idx].events |= PollEvent::POLLIN;
+        } else {
+            fds[stdout_idx].events |= PollEvent::POLLOUT;
+        }
+        if buf_out_len == 0 {
+            fds[stdin_idx].events |= PollEvent::POLLIN;
+        } else {
+            fds[stream_idx].events |= PollEvent::POLLOUT;
+        }
+        poll(&mut fds, None).unwrap();
+        for fd_idx in 0..3 {
             //eprintln!("Event: {:?}", event);
-            if event.readiness().is_readable() {
-                match event.token() {
-                    TOKEN_STDIN => {
-                        //eprintln!("Read from stdin");
-                        buf_out_len += stdin.read(&mut buf_out).unwrap();
-                    }
-                    TOKEN_STREAM => {
-                        //eprintln!("Read from stream");
-                        buf_in_len += stream.read(&mut buf_in).unwrap();
-                        //eprintln!("Write_all to stdout");
-                        //stdout.write_all(&buf_in[..len]).unwrap();
-                        //stdout.flush().unwrap();
-                    }
-                    _ => unreachable!(),
+            if fds[fd_idx].revents.contains(PollEvent::POLLIN) {
+                if fd_idx == stdin_idx {
+                    buf_out_len += stdin.read(&mut buf_out).unwrap();
+                } else if fd_idx == stream_idx {
+                    buf_in_len += stream.read(&mut buf_in).unwrap();
                 }
             }
-            if event.readiness().is_writable() {
-                match event.token() {
-                    TOKEN_STREAM => {
-                        //let len = stream.read(&mut buf_in).unwrap();
-                        //eprintln!("Write to stream");
-                        buf_out_len -= stream.write(&buf_out[..buf_out_len]).unwrap();
-                    }
-                    TOKEN_STDOUT => {
-                        buf_in_len -= stdout.write(&buf_in[..buf_in_len]).unwrap();
-                    }
-                    _ => unreachable!(),
+            if fds[fd_idx].revents.contains(PollEvent::POLLOUT) {
+                if fd_idx == stream_idx {
+                    buf_out_len -= stream.write(&buf_out[..buf_out_len]).unwrap();
+                } else if fd_idx == stdout_idx {
+                    buf_in_len -= stdout.write(&buf_in[..buf_in_len]).unwrap();
                 }
             }
-            if UnixReady::from(event.readiness()).is_hup() && event.token() == TOKEN_STREAM {
-                //eprintln!("Stream closed");
-                //stream_closed = true;
-                return Ok(());
-            }
-            if UnixReady::from(event.readiness()).is_hup() && event.token() == TOKEN_STDIN {
-                //eprintln!("Stdin closed");
-                stdin_closed = true;
+            if fds[fd_idx].revents.contains(PollEvent::POLLHUP) {
+                if fd_idx == stream_idx {
+                    return Ok(());
+                } else if fd_idx == stdin_idx {
+                    stdin_closed = true;
+                }
             }
         }
     }
