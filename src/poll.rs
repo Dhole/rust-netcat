@@ -37,7 +37,13 @@ bitflags! {
     }
 }
 
-#[repr(C, packed)]
+impl PollEvent {
+    pub fn clear(&mut self) {
+        self.bits = 0;
+    }
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PollFd {
     pub fd: RawFd, // file descriptor to poll
