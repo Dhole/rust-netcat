@@ -13,7 +13,6 @@ mod stdio;
 use getopts::Options;
 
 use mio::unix::{EventedFd, UnixReady};
-
 use mio::{Token, PollOpt, Ready, Poll, Events};
 use mio::net::TcpStream;
 
@@ -22,9 +21,8 @@ use mio::net::TcpStream;
 //use std::net::SocketAddr;
 
 //use std::io::BufRead;
-use std::env;
-use std::process;
-use std::net::TcpStream as NetTcpStream;
+use std::{env, process};
+use std::net::{TcpListener, TcpStream as NetTcpStream};
 use std::io::{self, Read, Write};
 //use std::io::ErrorKind;
 use std::os::unix::io::AsRawFd;
@@ -85,10 +83,15 @@ fn main() {
     //};
 }
 
-fn setup_stream(host: &str, port: &str) -> io::Result<TcpStream> {
-    let stream = NetTcpStream::connect(&format!("{}:{}", host, port))?;
-    TcpStream::from_stream(stream)
-}
+//fn tcp_connect(host: &str, port: &str) -> io::Result<TcpStream> {
+//    let stream = NetTcpStream::connect(&format!("{}:{}", host, port))?;
+//    TcpStream::from_stream(stream)
+//}
+//
+//fn tcp_listen(host: &str, port: &str) -> io::Result<TcpStream> {
+//    let stream = NetTcpStream::connect(&format!("{}:{}", host, port))?;
+//    TcpStream::from_stream(stream)
+//}
 
 #[derive(Primitive, Clone, Copy)]
 enum IoState {
@@ -105,7 +108,15 @@ fn main_loop(host: &str, port: &str, flag_listen: bool) -> io::Result<()> {
     //    //connect(opt_host, opt_port);
     //    Box::new(TcpStream::connect(format!("{}:{}", opt_host, opt_port)))
     //};
-    let mut stream = setup_stream(host, port)?;
+    let _stream = if flag_listen {
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", port))?;
+        let (stream, _socket) = listener.accept()?;
+        stream
+    } else {
+        //tcp_connect(host, port)?;
+        NetTcpStream::connect(&format!("{}:{}", host, port))?
+    };
+    let mut stream = TcpStream::from_stream(_stream)?;
     let stream_fd = stream.as_raw_fd();
     let stream_ev = EventedFd(&stream_fd);
     //let _stdin = io::stdin();
