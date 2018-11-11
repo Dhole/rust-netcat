@@ -16,3 +16,11 @@ So I moved to using the poll system call, using a wrap over the libc function (n
 Currently tcp over ipv4 is supported in both connect and listen modes.
 
 Performance is similar to openbsd-netcat.
+
+## Acknowledgements
+
+- Nan Xiao for writing the gitbook [OpenBSD netcat demystified](https://nanxiao.gitbooks.io/openbsd-netcat-demystified/) which brought my attention to the design of netcat, and gave me the idea to reimplement it in rust.
+- Israël Hallé and Daan Sprenkels for their libc's poll wrapper in rust, from which I've taken code for my own poll wrapper:
+  - https://github.com/isra17/rust-poll
+  - https://github.com/dsprenkels/rust-poll)
+- Original nc implementer (*Hobbit* <hobbit@avian.org>) and OpenBSD developers (Eric Jackson <ericj@monkey.org> and Bob Beck) for the netcat code which I've used as a base (some parts are quite literal translations from C to Rust) for this project.
