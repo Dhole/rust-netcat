@@ -13,6 +13,7 @@ use libc_utils::{cvt, max_len};
 use std::mem;
 use std::cmp;
 use std::io;
+use std::io::{Read, Write};
 use self::libc::{c_void, c_int};
 use std::os::unix::io::RawFd;
 use std::os::unix::io::AsRawFd;
@@ -29,22 +30,31 @@ impl Stdin {
         Ok(Stdin(FileDesc::new(libc::STDIN_FILENO)))
     }
 
-    pub fn read(&self, data: &mut [u8]) -> io::Result<usize> {
-        self.0.read(data)
-    }
-
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
     }
+}
+
+impl Read for Stdin {
+    fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
+        self.0.read(data)
+    }
+
 }
 
 impl Stdout {
     pub fn new() -> io::Result<Stdout> {
         Ok(Stdout(FileDesc::new(libc::STDOUT_FILENO)))
     }
+}
 
-    pub fn write(&self, data: &[u8]) -> io::Result<usize> {
+impl Write for Stdout {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         self.0.write(data)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -52,9 +62,15 @@ impl Stderr {
     pub fn new() -> io::Result<Stderr> {
         Ok(Stderr(FileDesc::new(libc::STDERR_FILENO)))
     }
+}
 
-    pub fn write(&self, data: &[u8]) -> io::Result<usize> {
+impl Write for Stderr {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         self.0.write(data)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

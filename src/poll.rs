@@ -43,6 +43,8 @@ impl PollEvent {
     }
 }
 
+pub const NOPOLLFD: RawFd = -1;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PollFd {
