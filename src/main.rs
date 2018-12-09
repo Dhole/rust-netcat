@@ -26,11 +26,12 @@ use getopts::Options;
 //use std::net::SocketAddr;
 
 //use std::io::BufRead;
+//use std::borrow::BorrowMut;
 use std::{env, process};
-use std::net::{TcpListener, TcpStream, Shutdown};
-use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream, UdpSocket, Shutdown};
+use std::io;
 //use std::io::ErrorKind;
-use std::os::unix::io::AsRawFd;
+//use std::os::unix::io::RawFd;
 
 fn print_usage(program: &str, opts: Options, code: i32) {
     let brief = format!("Usage: {} [options] [destination] [port]", program);
@@ -44,11 +45,24 @@ struct Opts<'a> {
     host: &'a str,
     port: &'a str,
     flags: Flags,
+    family: Option<Family>,
+    transport: Transport,
 }
 
 struct Flags {
     listen: bool,
     shutdown: bool,
+}
+
+enum Family {
+    IpV4,
+    IpV6,
+    Unix,
+}
+
+enum Transport {
+    Tcp,
+    Udp,
 }
 
 fn main() {
@@ -60,6 +74,8 @@ fn main() {
     opts.optflag("l", "", "Listen mode, for inbound connects");
     opts.optflag("4", "", "Use IPv4");
     opts.optflag("6", "", "Use IPv6");
+    opts.optflag("U", "", "Use UNIX domain socket");
+    opts.optflag("u", "", "UDP mode");
     opts.optopt("I", "", "TCP receive buffer length", "length");
     opts.optopt("O", "", "TCP send buffer length", "length");
     opts.optflag("N", "", "Shutdown the network socket after EOF on stdin");
@@ -91,6 +107,20 @@ fn main() {
     let opts = Opts {
         host: opt_host,
         port: opt_port,
+        family: if matches.opt_present("4") {
+            Some(Family::IpV4)
+        } else if matches.opt_present("6") {
+            Some(Family::IpV6)
+        } else if matches.opt_present("U") {
+            Some(Family::Unix)
+        } else {
+            None
+        },
+        transport: if matches.opt_present("u") {
+            Transport::Udp
+        } else {
+            Transport::Tcp
+        },
         flags: flags,
     };
 
@@ -119,57 +149,204 @@ fn main() {
 //    TcpStream::from_stream(stream)
 //}
 
-struct Buffer {
-    buf: Vec<u8>,
-    buf_read: usize,
-    buf_write: usize,
+mod fd_io {
+    use std::os::unix;
+    use std::os::unix::io::RawFd;
+    use std::io;
+    //use std::cmp::min;
+    use std::net::{TcpStream, UdpSocket, Shutdown};
+
+    use stdio::{Stdin, Stdout};
+
+    pub struct Buffer {
+        buf: Vec<u8>,
+        head: usize,
+        tail: usize,
+    }
+
+    impl Buffer {
+        pub fn new(len: usize) -> Self {
+            Buffer {
+                buf: vec![0; len],
+                head: 0,
+                tail: 0,
+            }
+        }
+
+        pub fn empty(&self) -> bool {
+            self.head == self.tail
+        }
+
+        //pub fn push(&mut self, buf: &[u8]) -> usize {
+        //    let len = min(self.buf.len() - self.tail, buf.len());
+        //    //let len = self.read(&mut buf.buf[buf.read..])?;
+        //    self.buf[self.tail..self.tail + len].clone_from_slice(&buf[..len]);
+        //    self.tail += len;
+        //    len
+        //}
+    }
+
+    pub trait Write {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize>;
+        fn drain(&mut self, buf: &mut Buffer) -> io::Result<usize> {
+            let len = self.write(&mut buf.buf[buf.head..buf.tail])?;
+            buf.head += len;
+            if buf.empty() {
+                buf.head = 0;
+                buf.tail = 0;
+            }
+            Ok(len)
+        }
+    }
+    pub trait Read {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
+        fn fill(&mut self, buf: &mut Buffer) -> io::Result<usize> {
+            let len = self.read(&mut buf.buf[buf.tail..])?;
+            buf.tail += len;
+            Ok(len)
+        }
+    }
+    pub trait AsRawFd {
+        fn as_raw_fd(&self) -> RawFd;
+    }
+    pub trait Network {
+        fn shutdown(&self, how: Shutdown) -> io::Result<()>;
+    }
+
+    impl Read for UdpSocket {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.recv(buf)
+        }
+    }
+    impl Write for UdpSocket {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.send(buf)
+        }
+    }
+    impl AsRawFd for UdpSocket {
+        fn as_raw_fd(&self) -> RawFd {
+            unix::io::AsRawFd::as_raw_fd(self)
+        }
+    }
+    impl Network for UdpSocket {
+        fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Read for TcpStream {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            io::Read::read(self, buf)
+        }
+    }
+    impl Write for TcpStream {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            io::Write::write(self, buf)
+        }
+    }
+    impl AsRawFd for TcpStream {
+        fn as_raw_fd(&self) -> RawFd {
+            unix::io::AsRawFd::as_raw_fd(self)
+        }
+    }
+    impl Network for TcpStream {
+        fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+            TcpStream::shutdown(&self, how)
+        }
+    }
+
+    impl Read for Stdin {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            io::Read::read(self, buf)
+        }
+    }
+    impl AsRawFd for Stdin {
+        fn as_raw_fd(&self) -> RawFd {
+            unix::io::AsRawFd::as_raw_fd(self)
+        }
+    }
+
+    impl Write for Stdout {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            io::Write::write(self, buf)
+        }
+    }
+    impl AsRawFd for Stdout {
+        fn as_raw_fd(&self) -> RawFd {
+            unix::io::AsRawFd::as_raw_fd(self)
+        }
+    }
+
+    pub trait Socket: Read + Write + AsRawFd + Network {}
+    impl<T> Socket for T
+    where
+        T: Read + Write + AsRawFd + Network,
+    {
+    }
+
 }
 
-impl Buffer {
-    fn new(len: usize) -> Self {
-        Buffer {
-            buf: vec![0; len],
-            buf_read: 0,
-            buf_write: 0,
+use fd_io::{Read, Write, AsRawFd, Socket, Buffer};
+
+fn connect<'a>(
+    host: &str,
+    port: &str,
+    family: &Option<Family>,
+    transport: &Transport,
+    listen: bool,
+    //buf_netin: &Buffer,
+) -> io::Result<Box<Socket>> {
+    Ok(match transport {
+        Transport::Tcp => {
+            if listen {
+                let listener = TcpListener::bind(format!("0.0.0.0:{}", port))?;
+                let (stream, _socket) = listener.accept()?;
+                Box::new(stream)
+            } else {
+                let stream = TcpStream::connect(&format!("{}:{}", host, port))?;
+                Box::new(stream)
+            }
         }
-    }
-
-    fn empty(&self) -> bool {
-        self.buf_read == self.buf_write
-    }
-
-    fn fill<T: Read>(&mut self, reader: &mut T) -> io::Result<usize> {
-        let len = reader.read(&mut self.buf[self.buf_read..])?;
-        self.buf_read += len;
-        Ok(len)
-    }
-
-    fn drain<T: Write>(&mut self, writer: &mut T) -> io::Result<usize> {
-        let len = writer.write(&mut self.buf[self.buf_write..self.buf_read])?;
-        self.buf_write += len;
-        if self.buf_write == self.buf_read {
-            self.buf_write = 0;
-            self.buf_read = 0;
+        Transport::Udp => {
+            if listen {
+                let socket = UdpSocket::bind(format!("0.0.0.0:{}", port))?;
+                let mut buf = vec![0; 2048];
+                let (_, addr) = socket.peek_from(&mut buf)?;
+                socket.connect(addr)?;
+                Box::new(socket)
+            } else {
+                let socket = UdpSocket::bind(&"0.0.0.0:0")?;
+                socket.connect(&format!("{}:{}", host, port))?;
+                Box::new(socket)
+            }
         }
-        Ok(len)
-    }
+    })
 }
 
 fn main_loop(opts: &Opts) -> io::Result<()> {
-    let mut stream = if opts.flags.listen {
-        let listener = TcpListener::bind(format!("0.0.0.0:{}", opts.port))?;
-        let (stream, _socket) = listener.accept()?;
-        stream
-    } else {
-        //tcp_connect(host, port)?;
-        TcpStream::connect(&format!("{}:{}", opts.host, opts.port))?
-    };
+    //let mut stream = if opts.flags.listen {
+    //    let listener = TcpListener::bind(format!("0.0.0.0:{}", opts.port))?;
+    //    let (stream, _socket) = listener.accept()?;
+    //    stream
+    //} else {
+    //    //tcp_connect(host, port)?;
+    //    TcpStream::connect(&format!("{}:{}", opts.host, opts.port))?
+    //};
     //let mut stream = TcpStream::from_stream(_stream)?;
     let mut stdin = stdio::Stdin::new()?;
     let mut stdout = stdio::Stdout::new()?;
 
     let mut buf_netin = Buffer::new(1024 * 64);
     let mut buf_stdin = Buffer::new(1024 * 64);
+
+    let mut stream = connect(
+        opts.host,
+        opts.port,
+        &opts.family,
+        &opts.transport,
+        opts.flags.listen,
+        //&buf_netin,
+    )?;
     //let mut buf_in = [0; 1024 * 64];
     //let (mut buf_in_read, mut buf_in_write) = (0, 0);
     //let mut buf_out = [0; 1024 * 64];
@@ -261,7 +438,7 @@ fn main_loop(opts: &Opts) -> io::Result<()> {
 
         // Try to read from stdin
         if pfd[POLL_STDIN].revents.contains(PollEvent::POLLIN) {
-            let len = buf_stdin.fill(&mut stdin)?;
+            let len = stdin.fill(&mut buf_stdin)?;
             //eprintln!("stdin len = {}", len);
             if len == 0 {
                 pfd[POLL_STDIN].fd = NOPOLLFD;
@@ -270,17 +447,18 @@ fn main_loop(opts: &Opts) -> io::Result<()> {
         }
         // Try to write to network
         if pfd[POLL_NETOUT].revents.contains(PollEvent::POLLOUT) {
-            buf_stdin.drain(&mut stream).unwrap();
+            //buf_stdin.drain::<Write>(stream.borrow_mut()).unwrap();
+            stream.drain(&mut buf_stdin)?;
         }
         // Try to read from network
         if pfd[POLL_NETIN].revents.contains(PollEvent::POLLIN) {
-            if buf_netin.fill(&mut stream).unwrap() == 0 {
+            if stream.fill(&mut buf_netin)? == 0 {
                 pfd[POLL_NETIN].fd = NOPOLLFD;
             }
         }
         // Try to write to stdout
         if pfd[POLL_STDOUT].revents.contains(PollEvent::POLLOUT) {
-            buf_netin.drain(&mut stdout)?;
+            stdout.drain(&mut buf_netin)?;
         }
 
         if pfd[POLL_NETOUT].revents.contains(PollEvent::POLLHUP) {
